@@ -1,15 +1,21 @@
 const express = require('express');
+const fs = require('fs');
+const util = require('util');
 const authMiddlewares = require('../middlewares/auth');
 
-const Client = require('../models/Client');
-
 const router = express.Router();
+const promisify = util.promisify;
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
+
+const clientsDatabase = 'src/database/clients.json';
 
 router.use(authMiddlewares);
 
 router.get('/', async (req, res) => {
   try {
-    const clients = await Client.find().populate('user');
+    const data = JSON.parse(await readFile(clientsDatabase, 'utf8'));
+    clients = data.clients;
 
     return res.send({ clients });
   } catch(err) {
@@ -19,7 +25,8 @@ router.get('/', async (req, res) => {
 
 router.get('/:clientId', async (req, res) => {
   try {
-    const client = await Client.findById(req.params.clientId).populate('user');
+    const data = JSON.parse(await readFile(clientsDatabase, 'utf8'));
+    client = data.clients.find(client => client.id === parseInt(req.params.clientId, 10));
 
     return res.send({ client });
   } catch(err) {
@@ -29,11 +36,14 @@ router.get('/:clientId', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { name, value, tags, phone, adress, birth } = req.body;
+    const data = JSON.parse(await readFile(clientsDatabase, 'utf8'));
+    let client = await req.body;
+    
+    client = { id: data.nextId++, ...client, user: req.userId };
+    data.clients.push(client);
+    await writeFile(clientsDatabase, JSON.stringify(data));
 
-    const client = await Client.create({ name, value, tags, phone, adress, birth,  user: req.userId });
-
-    return res.send({ client });
+   return res.send({ client });
   } catch(err) {
     return res.status(400).send({ error: 'Error creating new client' });
   }
@@ -41,11 +51,17 @@ router.post('/', async (req, res) => {
 
 router.put('/:clientId', async (req, res) => {
   try {
-    const { name, value, tags, phone, adress, birth } = req.body;
+    let newClient = req.body;
+    const data = JSON.parse(await readFile(clientsDatabase, 'utf8'));
+    let oldClientIndex = data.clients.findIndex(client => client.id === parseInt(req.params.clientId, 10));
+    
+    client = data.clients[oldClientIndex];
+    newClient = { id: client.id, ...newClient, user: client.user };
 
-    const client = await Client.findByIdAndUpdate(req.params.clientId, { name, value, tags, phone, adress, birth,  user: req.userId }, { new: true });
+    data.clients[oldClientIndex] = newClient;
+    await writeFile(clientsDatabase, JSON.stringify(data));
 
-    return res.send({ client });
+    return res.send({ newClient });
   } catch(err) {
     return res.status(400).send({ error: 'Error updating client' });
   }
@@ -53,9 +69,11 @@ router.put('/:clientId', async (req, res) => {
 
 router.delete('/:clientId', async (req, res) => {
   try {
-    await Client.findByIdAndRemove(req.params.clientId);
+    const data = JSON.parse(await readFile(clientsDatabase, 'utf8'));
+    data.clients = data.clients.filter(client => client.id !== parseInt(req.params.clientId, 10));
+    await writeFile(clientsDatabase, JSON.stringify(data));
 
-    return res.send();
+    return res.send({ deleted: true });
   } catch(err) {
     return res.status(400).send({ error: 'Error deleting client' });
   }

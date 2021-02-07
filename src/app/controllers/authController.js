@@ -1,14 +1,15 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const util = require('util');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const mailer = require('../../modules/mailer')
 
 const authConfig = require('../../config/auth');
 
-const User = require('../models/User');
-
 const router = express.Router();
+const promisify = util.promisify;
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
 
 function genereteToken(params = {}){
   return jwt.sign(params, authConfig.secret, {
@@ -18,7 +19,8 @@ function genereteToken(params = {}){
 
 router.get('/list', async (req, res) => {
   try {
-    const users = await User.find();
+    const data = JSON.parse(await readFile(global.fileName, 'utf8'));
+    users = data.users;
 
     return res.send({ users });
   } catch(err) {
@@ -26,27 +28,25 @@ router.get('/list', async (req, res) => {
   }
 });
 
-router.delete('/:authId', async (req, res) => {
-  try {
-    await User.findByIdAndRemove(req.params.authId);
-
-    return res.send();
-  } catch(err) {
-    return res.status(400).send({ error: 'Error deleting user' });
-  }
-});
-
-
 router.post('/register', async (req, res) => {
-  const { email } = req.body;
-
   try {
-    if(await User.findOne({ email }))
+    const { email } = req.body;
+    if(!req.body.name || !req.body.email || !req.body.password)
+      return res.status(400).send({ error: 'Registration failed'});
+
+    const data = JSON.parse(await readFile(global.fileName, 'utf8'));
+    if(!!data.users.find(user => user.email === email))
       return res.status(400).send({ error: 'User already exists'})
 
-    const user = await User.create(req.body);
-    user.password = undefined;
+    let user = await req.body;
+    const hash = await bcrypt.hash(user.password, 10);
+    user.password = hash;
 
+    user = { id: data.nextId++, ...user, timestamp: new Date() };
+    data.users.push(user);
+    await writeFile(global.fileName, JSON.stringify(data));
+
+    user.password = undefined;
     return res.send({ 
       user, 
       token: genereteToken({ id: user.id }),
@@ -58,82 +58,32 @@ router.post('/register', async (req, res) => {
 
 router.post('/authenticate', async (req, res) => {
   const { email, password } = req.body;
-  const user = await User.findOne({ email }).select('+password');
 
+  const data = JSON.parse(await readFile(global.fileName, 'utf8'));
+  const user = data.users.find(user => user.email === email);
+  
   if(!user)
     return res.status(400).send({ error: 'User not found' });
 
   if(!await bcrypt.compare(password, user.password))
     return res.status(400).send({ error: 'Invalid password' });
-
+  
   user.password = undefined;
-
   res.send({ 
-    user, 
+    user,
     token: genereteToken({ id: user.id }),
   });
 });
 
-router.post('/forgot_password', async (req, res) => {
-  const { email } = req.body;
-
+router.delete('/:id', async (req, res) => {
   try {
-    const user = await User.findOne({ email });
+    const data = JSON.parse(await readFile(global.fileName, 'utf8'));
+    data.users = data.users.filter(user => user.id !== parseInt(req.params.id, 10));
+    await writeFile(global.fileName, JSON.stringify(data));
 
-    if(!user)
-      return res.status(400).send({ error: 'User not found' });
-
-    const token = crypto.randomBytes(20).toString('hex');
-    const now = new Date();
-    now.setHours(now.getHours() + 1);
-
-    await User.findByIdAndUpdate(user.id, {
-      '$set': {
-        passwordResetToken: token,
-        passwordResetExpires: now,
-      }
-    })
-
-    mailer.sendMail({
-      to: email,
-      from: 'daniel@gmail.com',
-      temmplate: 'auth/forgot_password',
-      context: { token }
-    }, (err) => {
-      if(err)
-       res.status(400).send({ error: 'Cannot send forgot password email' });
-
-      return res.send();
-    })
-  } catch (err) {
-    return res.status(400).send({ error: 'Erro on forgot password, try again' });
-  }
-});
-
-router.post('/reset_password', async (req, res) => {
-  const { email, token, password } = req.body;
-
-  try {
-    const user = await User.findOne({ email })
-      .select('+passwordResetToken passwordResetExpires');
-
-    if(!user)
-      return res.status(400).send({ error: 'User not found' });
-    
-    if(token !== user.passwordResetExpires)
-      return res.status(400).send({ error: 'Token invalid' });
-
-    const now = new Date();
-    
-    if(now > user.passwordResetExpires)
-      return res.status(400).send({ error: 'Token expired, generate a new one' });
-    
-    user.password = password;
-    await user.save();
-    res.send();
-    
+    return res.send({ deleted: true });
   } catch(err) {
-    return res.status(400).send({ error: 'Cannot reset password, try again' });
+    return res.status(400).send({ error: 'Error deleting user' });
   }
 });
 

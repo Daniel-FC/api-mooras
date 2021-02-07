@@ -1,15 +1,21 @@
 const express = require('express');
+const fs = require('fs');
+const util = require('util');
 const authMiddlewares = require('../middlewares/auth');
 
-const Tag = require('../models/Tag');
-
 const router = express.Router();
+const promisify = util.promisify;
+const writeFile = promisify(fs.writeFile);
+const readFile = promisify(fs.readFile);
+
+const tagsDatabase = 'src/database/tags.json';
 
 router.use(authMiddlewares);
 
 router.get('/', async (req, res) => {
   try {
-    const tags = await Tag.find().populate('user');
+    const data = JSON.parse(await readFile(tagsDatabase, 'utf8'));
+    tags = data.tags;
 
     return res.send({ tags });
   } catch(err) {
@@ -19,7 +25,8 @@ router.get('/', async (req, res) => {
 
 router.get('/:tagId', async (req, res) => {
   try {
-    const tag = await Tag.findById(req.params.tagId).populate('user');
+    const data = JSON.parse(await readFile(tagsDatabase, 'utf8'));
+    tag = data.tags.find(tag => tag.id === parseInt(req.params.tagId, 10));
 
     return res.send({ tag });
   } catch(err) {
@@ -28,14 +35,15 @@ router.get('/:tagId', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  const { name } = req.body;
   try {
-    if(await Tag.findOne({ name }))
-      return res.status(400).send({ error: 'Tag already exists'})   
+    const data = JSON.parse(await readFile(tagsDatabase, 'utf8'));
+    let tag = await req.body;
+    
+    tag = { id: data.nextId++, ...tag, user: req.userId };
+    data.tags.push(tag);
+    await writeFile(tagsDatabase, JSON.stringify(data));
 
-    const tag = await Tag.create({ name, user: req.userId });
-
-    return res.send({ tag });
+   return res.send({ tag });
   } catch(err) {
     return res.status(400).send({ error: 'Error creating new tag' });
   }
@@ -43,11 +51,17 @@ router.post('/', async (req, res) => {
 
 router.put('/:tagId', async (req, res) => {
   try {
-    const { name } = req.body;
+    let newTag = req.body;
+    const data = JSON.parse(await readFile(tagsDatabase, 'utf8'));
+    let oldTagIndex = data.tags.findIndex(tag => tag.id === parseInt(req.params.tagId, 10));
+    
+    tag = data.tags[oldTagIndex];
+    newTag = { id: tag.id, ...newTag, user: tag.user };
 
-    const tag = await Tag.findByIdAndUpdate(req.params.tagId, { name }, { new: true });
+    data.tags[oldtagIndex] = newTag;
+    await writeFile(tagsDatabase, JSON.stringify(data));
 
-    return res.send({ tag });
+    return res.send({ newTag });
   } catch(err) {
     return res.status(400).send({ error: 'Error updating tag' });
   }
@@ -55,9 +69,11 @@ router.put('/:tagId', async (req, res) => {
 
 router.delete('/:tagId', async (req, res) => {
   try {
-    await Tag.findByIdAndRemove(req.params.tagId);
+    const data = JSON.parse(await readFile(tagsDatabase, 'utf8'));
+    data.tags = data.tags.filter(tag => tag.id !== parseInt(req.params.tagId, 10));
+    await writeFile(tagsDatabase, JSON.stringify(data));
 
-    return res.send();
+    return res.send({ deleted: true });
   } catch(err) {
     return res.status(400).send({ error: 'Error deleting tag' });
   }
